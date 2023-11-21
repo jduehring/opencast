@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to The Apereo Foundation under one or more contributor license
  * agreements. See the NOTICE file distributed with this work for additional
  * information regarding copyright ownership.
@@ -33,6 +33,7 @@ import org.opencastproject.workflow.api.WorkflowOperationException;
 import org.opencastproject.workflow.api.WorkflowOperationHandler;
 import org.opencastproject.workflow.api.WorkflowOperationResult;
 
+import org.apache.commons.lang3.BooleanUtils;
 import org.osgi.service.component.ComponentContext;
 import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
@@ -60,6 +61,8 @@ public class AnalyzeMediapackageWorkflowOperationHandler extends AbstractWorkflo
   /** The logging facility */
   private static final Logger logger = LoggerFactory.getLogger(AnalyzeMediapackageWorkflowOperationHandler.class);
 
+  public static final String TAG_VARIABLES_PROPERTY = "set-tag-variables";
+
   @Override
   public WorkflowOperationResult start(WorkflowInstance workflowInstance, JobContext context)
           throws WorkflowOperationException {
@@ -81,14 +84,23 @@ public class AnalyzeMediapackageWorkflowOperationHandler extends AbstractWorkflo
       elements = mpeSelector.select(mediaPackage, false);
     }
 
+    boolean setTagVariables = BooleanUtils.toBoolean(workflowInstance.getCurrentOperation()
+            .getConfiguration(TAG_VARIABLES_PROPERTY));
+
     Map<String, String> properties = new HashMap<>();
     for (MediaPackageElement mpe : elements) {
       if (MediaPackageElement.Type.Publication == mpe.getElementType()) {
         continue;
       }
-      String flavorPrefix = mpe.getFlavor().toString().replaceAll("[^a-z0-9]", "_").toLowerCase();
+      String flavorPrefix = mpe.getFlavor().getType() + "_" + mpe.getFlavor().getSubtype();
       properties.put(flavorPrefix + "_exists", "true");
       properties.put(flavorPrefix + "_type", mpe.getElementType().toString());
+
+      if (setTagVariables) {
+        for (String tag : mpe.getTags()) {
+          properties.put(flavorPrefix + "_hastag_" + tag, "true");
+        }
+      }
     }
     return createResult(mediaPackage, properties, WorkflowOperationResult.Action.CONTINUE, 0L);
   }
