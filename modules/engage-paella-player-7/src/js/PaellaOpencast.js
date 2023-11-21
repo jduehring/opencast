@@ -25,7 +25,7 @@
 
 import { Paella, bindEvent, Events, utils, log } from 'paella-core';
 import getBasicPluginContext from 'paella-basic-plugins';
-import getSlidePluginContext from 'paella-slide-plugins';
+//import getSlidePluginContext from 'paella-slide-plugins';
 import getZoomPluginContext from 'paella-zoom-plugin';
 import getUserTrackingPluginContext from 'paella-user-tracking';
 
@@ -82,7 +82,7 @@ const initParams = {
   customPluginContext: [
     require.context('../plugins', true, /\.js/),
     getBasicPluginContext(),
-    getSlidePluginContext(),
+    //getSlidePluginContext(),
     getZoomPluginContext(),
     getUserTrackingPluginContext()
   ],

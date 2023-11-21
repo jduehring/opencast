@@ -71,6 +71,18 @@ const g_streamTypes = [
       const mimetype = track.mimetype;
       return { src, mimetype };
     }
+  },
+  {
+    enabled: true,
+    streamType: 'mp3',
+    conditions: {
+      mimetype: 'audio/mpeg'
+    },
+    getSourceData: (track) => {
+      const src = track.url;
+      const mimetype = track.mimetype;
+      return { src, mimetype };
+    }
   }
 ];
 
@@ -165,9 +177,9 @@ function mergeSources(sources, config) {
         sources: {},
         content: content
       };
-
       if (content === audioContent) {
         stream.role = 'mainAudio';
+        stream.canvas = ['audio']; // add canvas so that audio-only can be detected by paella-core functions
       }
 
       streams.push(stream);
@@ -175,6 +187,7 @@ function mergeSources(sources, config) {
 
     stream.sources[type] = stream.sources[type] || [];
     stream.sources[type].push(source);
+
   });
   return streams;
 }
