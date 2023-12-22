@@ -179,7 +179,8 @@ function mergeSources(sources, config) {
       };
       if (content === audioContent) {
         stream.role = 'mainAudio';
-        stream.canvas = ['audio']; // add canvas so that audio-only can be detected by paella-core functions
+        // add canvas so that audio-only can be detected by paella-core functions
+        stream.canvas = ['audio'];
       }
 
       streams.push(stream);
