@@ -183,7 +183,7 @@
 
     <operation
       id="timelinepreviews"
-      if="(${presenter_source_video} OR $ ${presentation_source_video})"
+      if="(${presenter_work_video} OR $ ${presentation_work_video})"
       fail-on-error="false"
       exception-handler-workflow="partial-error"
       description="Creating timeline preview images">
@@ -203,7 +203,7 @@
 
     <operation
       id="include"
-      if="(${presenter_source_video} OR $ ${presentation_source_video})"
+      if="(${presenter_work_video} OR $ ${presentation_work_video})"
       description="Including theming operations">
       <configurations>
         <configuration key="workflow-id">partial-theming</configuration>
@@ -222,7 +222,7 @@
 
     <operation
       id="encode"
-      if="(${presenter_source_video} OR $ ${presentation_source_video})"
+      if="(${presenter_work_video} OR $ ${presentation_work_video})"
       exception-handler-workflow="partial-error"
       description="Encoding videos to mp4 delivery format">
       <configurations>
@@ -235,7 +235,7 @@
 
     <operation
       id="encode"
-      if="NOT (${presenter_source_video} OR $ ${presentation_source_video}) AND (${presenter_source_audio} OR ${presentation_source_audio})"
+      if="NOT (${presenter_work_video} OR $ ${presentation_work_video}) AND (${presenter_work_audio} OR ${presentation_work_audio})"
       exception-handler-workflow="partial-error"
       description="Encoding audio-only files to mp3 delivery format">
       <configurations>

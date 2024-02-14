@@ -27,6 +27,21 @@ window.onload = async () => {
   try {
     await applyOpencastTheme(paella);
     await paella.loadManifest();
+
+    // The player manifest access functions will only be available after the manifest has been loaded.
+    // Problem: Audio-only is not recognized as such
+    if (paella.streams.isNativelyPlayable &&
+    paella.streams.isAudioOnly &&
+    paella.frameList.isEmpty &&
+    (!paella.captions || paella.captions.length === 0))
+    {
+      const nativePlayer = paella.streams.nativePlayer;
+      nativePlayer.setAttribute('controls','');
+      //await paella.unload();
+      const playerContainer = document.getElementById('player-container');
+      playerContainer.innerHTML = '';
+      playerContainer.appendChild(nativePlayer);
+    }
     paella.log.info('Paella player load done');
   }
   catch(error){
