@@ -4,6 +4,71 @@ Changelog
 Opencast 15
 -----------
 
+### Opencast 15.4
+
+- [[#5738](https://github.com/opencast/opencast/pull/5738)] -
+  Update (New) Admin UI to 2024-04-10
+- [[#5696](https://github.com/opencast/opencast/pull/5696)] -
+  Mark RPMs as available
+- [[#5689](https://github.com/opencast/opencast/pull/5689)] -
+  Process-smil WOH tag-with-profile configuration does not work depending on the encoding profile suffix configured
+- [[#5686](https://github.com/opencast/opencast/pull/5686)] -
+  Fix editor track selection for updating tags
+- [[#5678](https://github.com/opencast/opencast/pull/5678)] -
+  Remove Spurious Warnings During Build
+- [[#5677](https://github.com/opencast/opencast/pull/5677)] -
+  Fix more JavaDoc
+- [[#5675](https://github.com/opencast/opencast/pull/5675)] -
+  Add synchronous deletion to Search API
+- [[#5673](https://github.com/opencast/opencast/pull/5673)] -
+  Paella7: Avoid opening downloaded video
+- [[#5670](https://github.com/opencast/opencast/pull/5670)] -
+  Make a dynamic OSGi dependency static
+- [[#5669](https://github.com/opencast/opencast/pull/5669)] -
+  Update temporal if empty
+- [[#5588](https://github.com/opencast/opencast/pull/5588)] -
+  Update typescript type definitions in ltitools
+
+### Opencast 15.3
+
+- [[#5669](https://github.com/opencast/opencast/pull/5669)] -
+  Update temporal if empty
+- [[#5663](https://github.com/opencast/opencast/pull/5663)] -
+  `publish-engage` nitpicks
+- [[#5630](https://github.com/opencast/opencast/pull/5630)] -
+  Add jersey to engage-ui build
+- [[#5618](https://github.com/opencast/opencast/pull/5618)] -
+  Update chromedriver
+- [[#5611](https://github.com/opencast/opencast/pull/5611)] -
+  Update maven bundle configuration
+- [[#5596](https://github.com/opencast/opencast/pull/5596)] -
+  Update build plugins
+- [[#5588](https://github.com/opencast/opencast/pull/5588)] -
+  Update typescript type definitions in ltitools
+- [[#5586](https://github.com/opencast/opencast/pull/5586)] -
+  Update axios from 0 to 1 in ltitools
+- [[#5543](https://github.com/opencast/opencast/pull/5543)] -
+  Use edited thumbnails in partial-publish.xml
+- [[#5487](https://github.com/opencast/opencast/pull/5487)] -
+  Add maven wrapper
+- [[#5339](https://github.com/opencast/opencast/pull/5339)] -
+  #5663 Paella7 patches frameList undefined exception
+- [[#4973](https://github.com/opencast/opencast/pull/4973)] -
+  Add WhisperC++ engine to speech-to-text-impl
+
+### Opencast 15.2
+
+- [[#5556](https://github.com/opencast/opencast/pull/5556)] -
+  Don't create composites for new editor
+- [[#5532](https://github.com/opencast/opencast/pull/5532)] -
+  Paella 7: Download audio trancripts (without timestamps)
+- [[#5530](https://github.com/opencast/opencast/pull/5530)] -
+  Don't log internal AmberScript service state
+- [[#5529](https://github.com/opencast/opencast/pull/5529)] -
+  Avoid unnecessary FFmpeg logs
+- [[#5528](https://github.com/opencast/opencast/pull/5528)] -
+  Editor shouldn't just overwrite existing files
+
 ### Opencast 15.1
 
 - [[#5546](https://github.com/opencast/opencast/pull/5546)] -
@@ -456,6 +521,33 @@ Opencast 15
 
 Opencast 14
 -----------
+
+### Opencast 14.11
+
+*Released on April 16th, 2024*
+
+- [[#5682](https://github.com/opencast/opencast/pull/5682)] -
+Quickfix dangling hard links on cephfs volumes
+- [[#5667](https://github.com/opencast/opencast/pull/5667)] -
+Fixed NPE on filtering data
+
+### Opencast 14.10
+
+*Released on March 14th, 2024*
+
+- [[#5619](https://github.com/opencast/opencast/pull/5619)] -
+Update setenv with currently supported options for Karaf
+- [[#5607](https://github.com/opencast/opencast/pull/5607)] -
+Fixed created value on scheduling event series
+- [[#5606](https://github.com/opencast/opencast/pull/5606)] -
+Fix vosk output filenames
+- [[#5604](https://github.com/opencast/opencast/pull/5604)] -
+Encode player redirect id parameter
+- [[#5600](https://github.com/opencast/opencast/pull/5600)] -
+Fix removal of event ACL from search when updating series ACL
+- [[#5594](https://github.com/opencast/opencast/pull/5594)] -
+Include all metadata in Tobira harvest API for series
+
 
 ### Opencast 14.9
 

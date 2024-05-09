@@ -101,7 +101,7 @@ Example on how to create the Opencast 7 release branch:
 4. That is it for the release branch. Now update the versions in `develop` in preparation for the next release:
 
         git checkout develop
-        mvn versions:set -DnewVersion=8-SNAPSHOT versions:commit
+        ./mvnw versions:set -DnewVersion=8-SNAPSHOT versions:commit
 
 5. Have a look at the changes. Make sure that nothing else was modified:
 
@@ -331,7 +331,7 @@ The following steps outline the necessary steps for cutting the final release:
 
 4. Make the version changes for the release:
 
-        mvn versions:set -DnewVersion=6.0 versions:commit
+        ./mvnw versions:set -DnewVersion=6.0 versions:commit
 
 5. Have a look at the changes. Make sure that nothing else was modified:
 
@@ -420,8 +420,11 @@ I am looking forward to your applications on list, please
 voice your interest until <DATE_ROUGHLY_2_WEEKS_IN_THE_FUTURE>.
 ```
 
-In the case where someone steps up and offers to fill in the role of a release manager for the upcoming release, a vote
-is held on the committers list to determine whether the candidates are deemed suitable for the position.
+In many cases only a single pair of users will step forward to fill these roles.  In this case, barring any objection
+from the community, these two will be selected to be release managers automatically.
+
+In the case where more than one pair steps up, a vote is held on the committers list to determine which pair of
+candidates are deemed most suitable for the position.
 
 This email template may be used to initiate the vote:
 
