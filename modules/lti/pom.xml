@@ -7,7 +7,7 @@
   <parent>
     <groupId>org.opencastproject</groupId>
     <artifactId>base</artifactId>
-    <version>17-SNAPSHOT</version>
+    <version>18-SNAPSHOT</version>
     <relativePath>../../pom.xml</relativePath>
   </parent>
   <properties>
@@ -43,6 +43,10 @@
     <dependency>
       <groupId>org.osgi</groupId>
       <artifactId>org.osgi.service.http.whiteboard</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.osgi</groupId>
+      <artifactId>org.osgi.service.jaxrs</artifactId>
     </dependency>
     <dependency>
       <groupId>commons-fileupload</groupId>
@@ -86,21 +90,6 @@
                   <executable>npm</executable>
                   <arguments>
                     <argument>ci</argument>
-                  </arguments>
-                </configuration>
-              </execution>
-
-              <execution>
-                <id>i18n</id>
-                <goals>
-                  <goal>exec</goal>
-                </goals>
-                <phase>compile</phase>
-                <configuration>
-                  <executable>npm</executable>
-                  <arguments>
-                    <argument>run</argument>
-                    <argument>i18n</argument>
                   </arguments>
                 </configuration>
               </execution>
@@ -156,17 +145,6 @@
                 </goals>
                 <configuration>
                   <arguments>ci</arguments>
-                </configuration>
-              </execution>
-
-              <execution>
-                <phase>initialize</phase>
-                <id>i18n</id>
-                <goals>
-                  <goal>npm</goal>
-                </goals>
-                <configuration>
-                  <arguments>run i18n</arguments>
                 </configuration>
               </execution>
 

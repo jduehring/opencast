@@ -28,6 +28,7 @@ import static com.entwinemedia.fn.data.json.Jsons.f;
 import static com.entwinemedia.fn.data.json.Jsons.obj;
 import static com.entwinemedia.fn.data.json.Jsons.v;
 import static org.apache.commons.lang3.StringUtils.trimToNull;
+import static org.opencastproject.external.common.ApiVersion.VERSION_1_11_0;
 import static org.opencastproject.external.common.ApiVersion.VERSION_1_1_0;
 import static org.opencastproject.external.common.ApiVersion.VERSION_1_4_0;
 import static org.opencastproject.external.common.ApiVersion.VERSION_1_7_0;
@@ -45,12 +46,13 @@ import org.opencastproject.elasticsearch.api.SearchIndexException;
 import org.opencastproject.elasticsearch.api.SearchResult;
 import org.opencastproject.elasticsearch.api.SearchResultItem;
 import org.opencastproject.elasticsearch.index.ElasticsearchIndex;
+import org.opencastproject.elasticsearch.index.QueryPreprocessor;
 import org.opencastproject.elasticsearch.index.objects.IndexObject;
 import org.opencastproject.elasticsearch.index.objects.event.Event;
 import org.opencastproject.elasticsearch.index.objects.event.EventIndexSchema;
 import org.opencastproject.elasticsearch.index.objects.event.EventSearchQuery;
 import org.opencastproject.external.common.ApiMediaType;
-import org.opencastproject.external.common.ApiResponses;
+import org.opencastproject.external.common.ApiResponseBuilder;
 import org.opencastproject.external.common.ApiVersion;
 import org.opencastproject.external.util.AclUtils;
 import org.opencastproject.external.util.ExternalMetadataUtils;
@@ -63,6 +65,7 @@ import org.opencastproject.index.service.util.RequestUtils;
 import org.opencastproject.index.service.util.RestUtils;
 import org.opencastproject.ingest.api.IngestException;
 import org.opencastproject.ingest.api.IngestService;
+import org.opencastproject.list.impl.EmptyResourceListQuery;
 import org.opencastproject.mediapackage.Attachment;
 import org.opencastproject.mediapackage.AudioStream;
 import org.opencastproject.mediapackage.Catalog;
@@ -141,6 +144,7 @@ import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.Reference;
 import org.osgi.service.component.annotations.ReferenceCardinality;
 import org.osgi.service.component.annotations.ReferencePolicy;
+import org.osgi.service.jaxrs.whiteboard.propertytypes.JaxrsResource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -158,8 +162,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 import javax.servlet.http.HttpServletRequest;
@@ -182,13 +187,24 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
 
-@Path("/")
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.Parameters;
+import io.swagger.v3.oas.annotations.enums.ParameterIn;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
+@Path("/api/events")
 @Produces({ ApiMediaType.JSON, ApiMediaType.VERSION_1_0_0, ApiMediaType.VERSION_1_1_0, ApiMediaType.VERSION_1_2_0,
             ApiMediaType.VERSION_1_3_0, ApiMediaType.VERSION_1_4_0, ApiMediaType.VERSION_1_5_0,
             ApiMediaType.VERSION_1_6_0, ApiMediaType.VERSION_1_7_0, ApiMediaType.VERSION_1_8_0,
             ApiMediaType.VERSION_1_9_0, ApiMediaType.VERSION_1_10_0, ApiMediaType.VERSION_1_11_0 })
 @RestService(name = "externalapievents", title = "External API Events Service", notes = {},
              abstractText = "Provides resources and operations related to the events")
+@Tag(name = "External API")
+@Tag(name = "External API - Events",
+    description = "The events endpoint provides resources and operations related to the events")
 @Component(
     immediate = true,
     service = { EventsEndpoint.class,ManagedService.class },
@@ -198,6 +214,7 @@ import javax.ws.rs.core.Response.Status;
         "opencast.service.path=/api/events"
     }
 )
+@JaxrsResource
 public class EventsEndpoint implements ManagedService {
 
   protected static final String URL_SIGNING_EXPIRES_DURATION_SECONDS_KEY = "url.signing.expires.seconds";
@@ -242,7 +259,8 @@ public class EventsEndpoint implements ManagedService {
   private IndexService indexService;
   private IngestService ingestService;
   private SecurityService securityService;
-  private final List<EventCatalogUIAdapter> catalogUIAdapters = new ArrayList<>();
+  private final List<EventCatalogUIAdapter> catalogUIAdapters = new CopyOnWriteArrayList<>();
+  private final Map<String, List<EventCatalogUIAdapter>> orgCatalogUIAdaptersMap = new ConcurrentHashMap<>();
   private UrlSigningService urlSigningService;
   private SchedulerService schedulerService;
   private CaptureAgentStateService agentStateService;
@@ -305,11 +323,27 @@ public class EventsEndpoint implements ManagedService {
   )
   public void addCatalogUIAdapter(EventCatalogUIAdapter catalogUIAdapter) {
     catalogUIAdapters.add(catalogUIAdapter);
+    invalidateOrgCatalogUIAdaptersMapFor(catalogUIAdapter);
   }
 
   /** OSGi DI. */
   public void removeCatalogUIAdapter(EventCatalogUIAdapter catalogUIAdapter) {
     catalogUIAdapters.remove(catalogUIAdapter);
+    invalidateOrgCatalogUIAdaptersMapFor(catalogUIAdapter);
+  }
+
+  /**
+   * Invalidates caches for organizations that are handled by given catalog.
+   *
+   * @param catalogUIAdapter catalog used to identify affected organizations.
+   */
+  private void invalidateOrgCatalogUIAdaptersMapFor(EventCatalogUIAdapter catalogUIAdapter) {
+    // clean cached org to catalog map
+    for (String orgName : orgCatalogUIAdaptersMap.keySet()) {
+      if (catalogUIAdapter.handlesOrganization(orgName)) {
+        orgCatalogUIAdaptersMap.remove(orgName);
+      }
+    }
   }
 
   /** OSGi DI */
@@ -331,17 +365,16 @@ public class EventsEndpoint implements ManagedService {
 
 
   private List<EventCatalogUIAdapter> getEventCatalogUIAdapters() {
-    return new ArrayList<>(getEventCatalogUIAdapters(getSecurityService().getOrganization().getId()));
+    return getEventCatalogUIAdapters(getSecurityService().getOrganization().getId());
   }
 
   public List<EventCatalogUIAdapter> getEventCatalogUIAdapters(String organization) {
-    List<EventCatalogUIAdapter> adapters = new ArrayList<>();
-    for (EventCatalogUIAdapter adapter : catalogUIAdapters) {
-      if (adapter.handlesOrganization(organization)) {
-        adapters.add(adapter);
-      }
-    }
-    return adapters;
+    List<EventCatalogUIAdapter> cachedCatalogUIAdapters = orgCatalogUIAdaptersMap.computeIfAbsent(organization,
+        org -> new ArrayList<>(catalogUIAdapters.stream()
+            .filter(a -> a.handlesOrganization(org))
+            .collect(Collectors.toList())));
+    // create a shallow copy as callers may change it
+    return new ArrayList<>(cachedCatalogUIAdapters);
   }
 
   /** OSGi activation method */
@@ -394,14 +427,28 @@ public class EventsEndpoint implements ManagedService {
                   @RestParameter(name = "withacl", isRequired = false, description = "Whether the acl metadata should be included in the response.", type = Type.BOOLEAN),
                   @RestParameter(name = "withmetadata", isRequired = false, description = "Whether the metadata catalogs should be included in the response.", type = Type.BOOLEAN),
                   @RestParameter(name = "withscheduling", isRequired = false, description = "Whether the scheduling information should be included in the response.", type = Type.BOOLEAN),
-                  @RestParameter(name = "withpublications", isRequired = false, description = "Whether the publication ids and urls should be included in the response.", type = Type.BOOLEAN), }, responses = {
+                  @RestParameter(name = "withpublications", isRequired = false, description = "Whether the publication ids and urls should be included in the response.", type = Type.BOOLEAN),
+                  @RestParameter(name = "includeInternalPublication", isRequired = false, description = "Whether internal publications should be included.", type = Type.BOOLEAN)}, responses = {
                           @RestResponse(description = "The event is returned.", responseCode = HttpServletResponse.SC_OK),
                           @RestResponse(description = "The specified event does not exist.", responseCode = HttpServletResponse.SC_NOT_FOUND) })
-  public Response getEvent(@HeaderParam("Accept") String acceptHeader, @PathParam("eventId") String id,
-          @QueryParam("sign") boolean sign, @QueryParam("withacl") Boolean withAcl,
-          @QueryParam("withmetadata") Boolean withMetadata, @QueryParam("withscheduling") Boolean withScheduling,
-          @QueryParam("withpublications") Boolean withPublications)
-          throws Exception {
+  @Operation(summary = "Get a single event", description = "Returns a single event. By setting the optional sign parameter to true, the method will pre-sign distribution urls if signing is turned on in Opencast. Remember to consider the maximum validity of signed URLs when caching this response.")
+  public Response getEvent(
+      @HeaderParam("Accept") String acceptHeader,
+      @Parameter(description = "The event id", required = true)
+      @PathParam("eventId") String id,
+      @Parameter(description = "Whether public distribution urls should be signed.")
+      @QueryParam("sign") boolean sign,
+      @Parameter(description = "Whether the acl metadata should be included in the response.")
+      @QueryParam("withacl") Boolean withAcl,
+      @Parameter(description = "Whether the metadata catalogs should be included in the response.")
+      @QueryParam("withmetadata") Boolean withMetadata,
+      @Parameter(description = "Whether the scheduling information should be included in the response.")
+      @QueryParam("withscheduling") Boolean withScheduling,
+      @Parameter(description = "Whether the publication ids and urls should be included in the response.")
+      @QueryParam("withpublications") Boolean withPublications,
+      @Parameter(description = "Whether internal publications should be included.")
+      @QueryParam("includeInternalPublication") Boolean includeInternalPublication)
+        throws Exception {
     final ApiVersion requestedVersion = ApiMediaType.parse(acceptHeader).getVersion();
     if (requestedVersion.isSmallerThan(VERSION_1_1_0)) {
       // withScheduling was added in version 1.1.0 and should be ignored for smaller versions
@@ -409,10 +456,10 @@ public class EventsEndpoint implements ManagedService {
     }
     for (final Event event : indexService.getEvent(id, elasticsearchIndex)) {
       event.updatePreview(previewSubtype);
-      return ApiResponses.Json.ok(
-          requestedVersion, eventToJSON(event, withAcl, withMetadata, withScheduling, withPublications, sign, requestedVersion));
+      return ApiResponseBuilder.Json.ok(
+          requestedVersion, eventToJSON(event, withAcl, withMetadata, withScheduling, withPublications, includeInternalPublication, sign, requestedVersion));
     }
-    return ApiResponses.notFound("Cannot find an event with id '%s'.", id);
+    return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", id);
   }
 
   @GET
@@ -421,6 +468,15 @@ public class EventsEndpoint implements ManagedService {
       @RestParameter(name = "eventId", description = "The event id", isRequired = true, type = STRING) }, responses = {
       @RestResponse(description = "The event's media is returned.", responseCode = HttpServletResponse.SC_OK),
       @RestResponse(description = "The specified event does not exist.", responseCode = HttpServletResponse.SC_NOT_FOUND) })
+  @Operation(summary = "Get media tracks of a single event", description = "Returns media tracks of specific single event.")
+  @Parameters({
+      @Parameter(name = "eventId", description = "The event id", required = true, in = ParameterIn.PATH),
+      @Parameter(name = "Accept", description = "The accept header", required = true, in = ParameterIn.HEADER)
+  })
+  @ApiResponses(value = {
+      @ApiResponse(responseCode = "200", description = "The event's media is returned."),
+      @ApiResponse(responseCode = "404", description = "The specified event does not exist.")
+  })
   public Response getEventMedia(@HeaderParam("Accept") String acceptHeader, @PathParam("eventId") String id)
           throws Exception {
     final ApiVersion requestedVersion = ApiMediaType.parse(acceptHeader).getVersion();
@@ -476,9 +532,9 @@ public class EventsEndpoint implements ManagedService {
           fields.add(f("uri", v(track.getURI().toString())));
         tracksJson.add(obj(fields));
       }
-      return ApiResponses.Json.ok(acceptHeader, arr(tracksJson));
+      return ApiResponseBuilder.Json.ok(acceptHeader, arr(tracksJson));
     }
-    return ApiResponses.notFound("Cannot find an event with id '%s'.", id);
+    return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", id);
   }
 
   @DELETE
@@ -597,9 +653,9 @@ public class EventsEndpoint implements ManagedService {
 
         return Response.noContent().build();
       }
-      return ApiResponses.notFound("Cannot find an event with id '%s'.", eventId);
+      return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", eventId);
     } catch (NotFoundException e) {
-      return ApiResponses.notFound("Cannot find an event with id '%s'.", eventId);
+      return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", eventId);
     } catch (UnauthorizedException e) {
       return Response.status(Status.UNAUTHORIZED).build();
     } catch (IllegalArgumentException e) {
@@ -648,7 +704,7 @@ public class EventsEndpoint implements ManagedService {
       source.put("type", "UPLOAD");
       eventHttpServletRequest.setSource(source);
       String eventId = indexService.createEvent(eventHttpServletRequest);
-      return ApiResponses.Json.created(requestedVersion, URI.create(getEventUrl(eventId)), obj(f("identifier", v(eventId))));
+      return ApiResponseBuilder.Json.created(requestedVersion, URI.create(getEventUrl(eventId)), obj(f("identifier", v(eventId))));
     } catch (IllegalArgumentException | DateTimeParseException e) {
       logger.debug("Unable to create event", e);
       return RestUtil.R.badRequest(e.getMessage());
@@ -684,19 +740,19 @@ public class EventsEndpoint implements ManagedService {
 
       if (eventId.contains(",")) {
         // This the case when SCHEDULE_MULTIPLE is performed.
-        return ApiResponses.Json.ok(requestedVersion, arr(
+        return ApiResponseBuilder.Json.ok(requestedVersion, arr(
             Arrays.stream(eventId.split(","))
                 .map(s -> obj(f("identifier", v(s))))
                 .collect(Collectors.toList()))
         );
       }
 
-      return ApiResponses.Json.created(requestedVersion, URI.create(getEventUrl(eventId)), obj(f("identifier", v(eventId))));
+      return ApiResponseBuilder.Json.created(requestedVersion, URI.create(getEventUrl(eventId)), obj(f("identifier", v(eventId))));
     } catch (SchedulerConflictException e) {
       final List<MediaPackage> conflictingEvents =
           getConflictingEvents(schedulingInfo, agentStateService, schedulerService);
       logger.debug("Client tried to schedule conflicting event(s).");
-      return ApiResponses.Json.conflict(requestedVersion,
+      return ApiResponseBuilder.Json.conflict(requestedVersion,
           arr(convertConflictingEvents(Optional.empty(), conflictingEvents, indexService, elasticsearchIndex)));
     }
   }
@@ -709,6 +765,7 @@ public class EventsEndpoint implements ManagedService {
           @RestParameter(name = "withmetadata", isRequired = false, description = "Whether the metadata catalogs should be included in the response.", type = Type.BOOLEAN),
           @RestParameter(name = "withscheduling", isRequired = false, description = "Whether the scheduling information should be included in the response.", type = Type.BOOLEAN),
           @RestParameter(name = "withpublications", isRequired = false, description = "Whether the publication ids and urls should be included in the response.", type = Type.BOOLEAN),
+          @RestParameter(name = "includeInternalPublication", description = "Whether internal publications should be included.", isRequired = false, type = Type.BOOLEAN),
           @RestParameter(name = "onlyWithWriteAccess", isRequired = false, description = "Whether only to get the events to which we have write access.", type = Type.BOOLEAN),
           @RestParameter(name = "filter", isRequired = false, description = "Usage [Filter Name]:[Value to Filter With]. Multiple filters can be used by combining them with commas \",\". Available Filters: presenters, contributors, location, textFilter, series, subject. If API ver > 1.1.0 also: identifier, title, description, series_name, language, created, license, rightsholder, is_part_of, source, status, agent_id, start, technical_start.", type = STRING),
           @RestParameter(name = "sort", description = "Sort the results based upon a list of comma seperated sorting criteria. In the comma seperated list each type of sorting is specified as a pair such as: <Sort Name>:ASC or <Sort Name>:DESC. Adding the suffix ASC or DESC sets the order as ascending or descending order and is mandatory.", isRequired = false, type = STRING),
@@ -720,7 +777,7 @@ public class EventsEndpoint implements ManagedService {
           @QueryParam("filter") List<String> filter, @QueryParam("sort") String sort, @QueryParam("offset") Integer offset,
           @QueryParam("limit") Integer limit, @QueryParam("sign") boolean sign, @QueryParam("withacl") Boolean withAcl,
           @QueryParam("withmetadata") Boolean withMetadata, @QueryParam("withscheduling") Boolean withScheduling,
-          @QueryParam("onlyWithWriteAccess") Boolean onlyWithWriteAccess, @QueryParam("withpublications") Boolean withPublications) {
+          @QueryParam("onlyWithWriteAccess") Boolean onlyWithWriteAccess, @QueryParam("withpublications") Boolean withPublications, @QueryParam("includeInternalPublication") Boolean includeInternalPublication) {
     final ApiVersion requestedVersion = ApiMediaType.parse(acceptHeader).getVersion();
     if (requestedVersion.isSmallerThan(VERSION_1_1_0)) {
       // withscheduling was added for version 1.1.0 and should be ignored for smaller versions.
@@ -751,7 +808,7 @@ public class EventsEndpoint implements ManagedService {
         for (String f : filterPart.split(",")) {
           String[] filterTuple = f.split(":");
           if (filterTuple.length < 2) {
-            logger.info("No value for filter {} in filters list: {}", filterTuple[0], filter);
+            logger.debug("No value for filter {} in filters list: {}", filterTuple[0], filter);
             continue;
           }
 
@@ -772,7 +829,7 @@ public class EventsEndpoint implements ManagedService {
           } else if ("location".equals(name)) {
             query.withLocation(value);
           } else if ("textFilter".equals(name)) {
-            query.withText("*" + elasticsearchIndex.escapeQuery(value) + "*");
+            query.withText(QueryPreprocessor.sanitize(value));
           } else if ("series".equals(name)) {
             query.withSeriesId(value);
           } else if ("subject".equals(name)) {
@@ -832,7 +889,7 @@ public class EventsEndpoint implements ManagedService {
         }
 
         if (optSort.isSome()) {
-          Set<SortCriterion> sortCriteria = RestUtils.parseSortQueryParameter(optSort.get());
+          ArrayList<SortCriterion> sortCriteria = RestUtils.parseSortQueryParameter(optSort.get());
           for (SortCriterion criterion : sortCriteria) {
 
             switch (criterion.getFieldName()) {
@@ -911,7 +968,7 @@ public class EventsEndpoint implements ManagedService {
       }
     } else {
       if (optSort.isSome()) {
-        Set<SortCriterion> sortCriteria = RestUtils.parseSortQueryParameter(optSort.get());
+        ArrayList<SortCriterion> sortCriteria = RestUtils.parseSortQueryParameter(optSort.get());
         for (SortCriterion criterion : sortCriteria) {
 
           switch (criterion.getFieldName()) {
@@ -995,7 +1052,7 @@ public class EventsEndpoint implements ManagedService {
     }
     try {
       return getJsonEvents(
-          acceptHeader, allEvents, withAcl, withMetadata, withScheduling, withPublications, sign, requestedVersion);
+          acceptHeader, allEvents, withAcl, withMetadata, withScheduling, withPublications, includeInternalPublication, sign, requestedVersion);
     } catch (Exception e) {
       logger.error("Unable to get events", e);
       throw new WebApplicationException(Status.INTERNAL_SERVER_ERROR);
@@ -1025,14 +1082,14 @@ public class EventsEndpoint implements ManagedService {
    * @throws UnauthorizedException
    */
   protected Response getJsonEvents(String acceptHeader, List<IndexObject> events, Boolean withAcl, Boolean withMetadata,
-          Boolean withScheduling, Boolean withPublications, Boolean withSignedUrls, ApiVersion requestedVersion)
+          Boolean withScheduling, Boolean withPublications,Boolean includeInternalPublication, Boolean withSignedUrls, ApiVersion requestedVersion)
       throws IndexServiceException, UnauthorizedException, SchedulerException {
     List<JValue> eventsList = new ArrayList<>();
     for (IndexObject item : events) {
-      eventsList.add(eventToJSON((Event) item, withAcl, withMetadata, withScheduling, withPublications, withSignedUrls,
+      eventsList.add(eventToJSON((Event) item, withAcl, withMetadata, withScheduling, withPublications, includeInternalPublication, withSignedUrls,
               requestedVersion));
     }
-    return ApiResponses.Json.ok(requestedVersion, arr(eventsList));
+    return ApiResponseBuilder.Json.ok(requestedVersion, arr(eventsList));
   }
 
   /**
@@ -1057,7 +1114,7 @@ public class EventsEndpoint implements ManagedService {
    * @throws UnauthorizedException
    */
   protected JValue eventToJSON(Event event, Boolean withAcl, Boolean withMetadata, Boolean withScheduling,
-          Boolean withPublications, Boolean withSignedUrls, ApiVersion requestedVersion) throws IndexServiceException, SchedulerException, UnauthorizedException {
+          Boolean withPublications, Boolean includeInternalPublication, Boolean withSignedUrls, ApiVersion requestedVersion) throws IndexServiceException, SchedulerException, UnauthorizedException {
     List<Field> fields = new ArrayList<>();
     if (event.getArchiveVersion() != null)
       fields.add(f("archive_version", v(event.getArchiveVersion())));
@@ -1124,7 +1181,7 @@ public class EventsEndpoint implements ManagedService {
       fields.add(f("scheduling", SchedulingInfo.of(event.getIdentifier(), schedulerService).toJson()));
     }
     if (withPublications != null && withPublications) {
-      List<JValue> publications = getPublications(event, withSignedUrls, requestedVersion);
+      List<JValue> publications = getPublications(event, withSignedUrls, includeInternalPublication,requestedVersion);
       fields.add(f("publications", arr(publications)));
     }
     return obj(fields);
@@ -1149,9 +1206,9 @@ public class EventsEndpoint implements ManagedService {
           throws Exception {
     for (final Event event : indexService.getEvent(id, elasticsearchIndex)) {
       AccessControlList acl = getAclFromEvent(event);
-      return ApiResponses.Json.ok(acceptHeader, arr(AclUtils.serializeAclToJson(acl)));
+      return ApiResponseBuilder.Json.ok(acceptHeader, arr(AclUtils.serializeAclToJson(acl)));
     }
-    return ApiResponses.notFound("Cannot find an event with id '%s'.", id);
+    return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", id);
   }
 
   @PUT
@@ -1182,7 +1239,7 @@ public class EventsEndpoint implements ManagedService {
       }
       return Response.noContent().build();
     } else {
-      return ApiResponses.notFound("Cannot find an event with id '%s'.", id);
+      return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", id);
     }
   }
 
@@ -1229,7 +1286,7 @@ public class EventsEndpoint implements ManagedService {
       }
       return Response.noContent().build();
     }
-    return ApiResponses.notFound("Cannot find an event with id '%s'.", id);
+    return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", id);
   }
 
   @DELETE
@@ -1255,7 +1312,7 @@ public class EventsEndpoint implements ManagedService {
       }
 
       if (!foundDelete) {
-        return ApiResponses.notFound("Unable to find an access control entry with action '%s' and role '%s'", action,
+        return ApiResponseBuilder.notFound("Unable to find an access control entry with action '%s' and role '%s'", action,
                 role);
       }
 
@@ -1268,7 +1325,7 @@ public class EventsEndpoint implements ManagedService {
       }
       return Response.noContent().build();
     }
-    return ApiResponses.notFound("Cannot find an event with id '%s'.", id);
+    return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", id);
   }
 
   @GET
@@ -1293,10 +1350,10 @@ public class EventsEndpoint implements ManagedService {
           convertStartDateTimeToApiV1(collection);
         }
 
-        return ApiResponses.Json.ok(requestedVersion, MetadataJson.listToJson(actualList, withOrderedText));
+        return ApiResponseBuilder.Json.ok(requestedVersion, MetadataJson.listToJson(actualList, withOrderedText));
       }
       else
-        return ApiResponses.notFound("Cannot find an event with id '%s'.", id);
+        return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", id);
     } else {
       return getEventMetadataByType(id, type, requestedVersion);
     }
@@ -1344,16 +1401,19 @@ public class EventsEndpoint implements ManagedService {
     List<EventCatalogUIAdapter> catalogUIAdapters = getEventCatalogUIAdapters();
     EventCatalogUIAdapter eventCatalogUIAdapter = indexService.getCommonEventCatalogUIAdapter();
     catalogUIAdapters.remove(eventCatalogUIAdapter);
-    MediaPackage mediaPackage = indexService.getEventMediapackage(event);
     if (catalogUIAdapters.size() > 0) {
+      MediaPackage mediaPackage = indexService.getEventMediapackage(event);
       for (EventCatalogUIAdapter catalogUIAdapter : catalogUIAdapters) {
         // TODO: This is very slow:
         DublinCoreMetadataCollection fields = catalogUIAdapter.getFields(mediaPackage);
-        if (fields != null) metadataList.add(catalogUIAdapter, fields);
+        if (fields != null) {
+          ExternalMetadataUtils.removeCollectionList(fields);
+          metadataList.add(catalogUIAdapter, fields);
+        }
       }
     }
-    // TODO: This is slow:
-    DublinCoreMetadataCollection collection = EventUtils.getEventMetadata(event, eventCatalogUIAdapter);
+    DublinCoreMetadataCollection collection = EventUtils.getEventMetadata(event, eventCatalogUIAdapter,
+        new EmptyResourceListQuery());
     ExternalMetadataUtils.changeSubjectToSubjects(collection);
     ExternalMetadataUtils.removeCollectionList(collection);
     metadataList.add(eventCatalogUIAdapter, collection);
@@ -1382,29 +1442,30 @@ public class EventsEndpoint implements ManagedService {
       // Try the main catalog first as we load it from the index.
       EventCatalogUIAdapter eventCatalogUIAdapter = indexService.getCommonEventCatalogUIAdapter();
       if (flavor.get().equals(eventCatalogUIAdapter.getFlavor())) {
-        DublinCoreMetadataCollection collection = EventUtils.getEventMetadata(event, eventCatalogUIAdapter);
+        DublinCoreMetadataCollection collection = EventUtils.getEventMetadata(event, eventCatalogUIAdapter,
+            new EmptyResourceListQuery());
         ExternalMetadataUtils.changeSubjectToSubjects(collection);
         ExternalMetadataUtils.removeCollectionList(collection);
         convertStartDateTimeToApiV1(collection);
-        return ApiResponses.Json.ok(requestedVersion, MetadataJson.collectionToJson(collection, false));
+        return ApiResponseBuilder.Json.ok(requestedVersion, MetadataJson.collectionToJson(collection, false));
       }
       // Try the other catalogs
       List<EventCatalogUIAdapter> catalogUIAdapters = getEventCatalogUIAdapters();
       catalogUIAdapters.remove(eventCatalogUIAdapter);
-      MediaPackage mediaPackage = indexService.getEventMediapackage(event);
       if (catalogUIAdapters.size() > 0) {
+        MediaPackage mediaPackage = indexService.getEventMediapackage(event);
         for (EventCatalogUIAdapter catalogUIAdapter : catalogUIAdapters) {
           if (flavor.get().equals(catalogUIAdapter.getFlavor())) {
             DublinCoreMetadataCollection fields = catalogUIAdapter.getFields(mediaPackage);
             ExternalMetadataUtils.removeCollectionList(fields);
             convertStartDateTimeToApiV1(fields);
-            return ApiResponses.Json.ok(requestedVersion, MetadataJson.collectionToJson(fields, false));
+            return ApiResponseBuilder.Json.ok(requestedVersion, MetadataJson.collectionToJson(fields, false));
           }
         }
       }
-      return ApiResponses.notFound("Cannot find a catalog with type '%s' for event with id '%s'.", type, id);
+      return ApiResponseBuilder.notFound("Cannot find a catalog with type '%s' for event with id '%s'.", type, id);
     }
-    return ApiResponses.notFound("Cannot find an event with id '%s'.", id);
+    return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", id);
   }
 
   @PUT
@@ -1458,8 +1519,8 @@ public class EventsEndpoint implements ManagedService {
       // Try the other catalogs
       List<EventCatalogUIAdapter> catalogUIAdapters = getEventCatalogUIAdapters();
       catalogUIAdapters.remove(eventCatalogUIAdapter);
-      MediaPackage mediaPackage = indexService.getEventMediapackage(event);
       if (catalogUIAdapters.size() > 0) {
+        MediaPackage mediaPackage = indexService.getEventMediapackage(event);
         for (EventCatalogUIAdapter catalogUIAdapter : catalogUIAdapters) {
           if (flavor.get().equals(catalogUIAdapter.getFlavor())) {
             collection = catalogUIAdapter.getFields(mediaPackage);
@@ -1471,7 +1532,7 @@ public class EventsEndpoint implements ManagedService {
       }
 
       if (collection == null) {
-        return ApiResponses.notFound("Cannot find a catalog with type '%s' for event with id '%s'.", type, id);
+        return ApiResponseBuilder.notFound("Cannot find a catalog with type '%s' for event with id '%s'.", type, id);
       }
 
       for (String key : updatedFields.keySet()) {
@@ -1545,12 +1606,12 @@ public class EventsEndpoint implements ManagedService {
       indexService.updateEventMetadata(id, metadataList, elasticsearchIndex);
       return Response.noContent().build();
     }
-    return ApiResponses.notFound("Cannot find an event with id '%s'.", id);
+    return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", id);
   }
 
   private Opt<Response> validateField(MetadataField field, String key, String id, String type, Map<String, String> updatedFields) {
     if (field == null) {
-      return Opt.some(ApiResponses.notFound(
+      return Opt.some(ApiResponseBuilder.notFound(
               "Cannot find a metadata field with id '%s' from event with id '%s' and the metadata type '%s'.",
               key, id, type));
     } else if (field.isRequired() && StringUtils.isBlank(updatedFields.get(key))) {
@@ -1587,7 +1648,7 @@ public class EventsEndpoint implements ManagedService {
       try {
         indexService.removeCatalogByFlavor(event, flavor.get());
       } catch (NotFoundException e) {
-        return ApiResponses.notFound(e.getMessage());
+        return ApiResponseBuilder.notFound(e.getMessage());
       } catch (IndexServiceException e) {
         logger.error("Unable to remove metadata catalog with type '{}' from event '{}'", type, id, e);
         throw new WebApplicationException(Status.INTERNAL_SERVER_ERROR);
@@ -1599,7 +1660,7 @@ public class EventsEndpoint implements ManagedService {
       }
       return Response.noContent().build();
     }
-    return ApiResponses.notFound("Cannot find an event with id '%s'.", id);
+    return ApiResponseBuilder.notFound("Cannot find an event with id '%s'.", id);
   }
 
   @GET
@@ -1611,20 +1672,23 @@ public class EventsEndpoint implements ManagedService {
              },
              restParameters = {
                @RestParameter(name = "sign", description = "Whether public distribution urls should be signed.",
+                              isRequired = false, type = Type.BOOLEAN),
+               @RestParameter(name = "includeInternalPublication", description = "Whether internal publications should be included.",
                               isRequired = false, type = Type.BOOLEAN)
              },
              responses = {
                   @RestResponse(description = "The list of publications is returned.", responseCode = HttpServletResponse.SC_OK),
                   @RestResponse(description = "The specified event does not exist.", responseCode = HttpServletResponse.SC_NOT_FOUND) })
-  public Response getEventPublications(@HeaderParam("Accept") String acceptHeader, @PathParam("eventId") String id,
-          @QueryParam("sign") boolean sign) throws Exception {
+
+    public Response getEventPublications(@HeaderParam("Accept") String acceptHeader, @PathParam("eventId") String id,
+          @QueryParam("sign") boolean sign, @QueryParam("includeInternalPublication") boolean includeInternalPublication) throws Exception {
     try {
       final ApiVersion requestedVersion = ApiMediaType.parse(acceptHeader).getVersion();
       final Opt<Event> event = indexService.getEvent(id, elasticsearchIndex);
       if (event.isSome()) {
-        return ApiResponses.Json.ok(acceptHeader, arr(getPublications(event.get(), sign, requestedVersion)));
+        return ApiResponseBuilder.Json.ok(acceptHeader, arr(getPublications(event.get(), sign, includeInternalPublication, requestedVersion)));
       } else {
-        return ApiResponses.notFound(String.format("Unable to find event with id '%s'", id));
+        return ApiResponseBuilder.notFound(String.format("Unable to find event with id '%s'", id));
       }
     } catch (SearchIndexException e) {
       logger.error("Unable to get list of publications from event with id '{}'", id, e);
@@ -1632,9 +1696,10 @@ public class EventsEndpoint implements ManagedService {
     }
   }
 
-  private List<JValue> getPublications(Event event, Boolean withSignedUrls, ApiVersion requestedVersion) {
-    return event.getPublications().stream()
-        .filter(EventUtils.internalChannelFilter::apply)
+
+  private List<JValue> getPublications(Event event, Boolean withSignedUrls, Boolean includeInternalPublication, ApiVersion requestedVersion) {
+        return event.getPublications().stream()
+        .filter(publication -> ((includeInternalPublication != null && includeInternalPublication && !requestedVersion.isSmallerThan(VERSION_1_11_0)) || EventUtils.internalChannelFilter.apply(publication)))
         .map(p -> getPublication(p, withSignedUrls, requestedVersion))
         .collect(Collectors.toList());
   }
@@ -1744,23 +1809,26 @@ public class EventsEndpoint implements ManagedService {
              responses = {
                   @RestResponse(description = "The track details are returned.", responseCode = HttpServletResponse.SC_OK),
                   @RestResponse(description = "The specified event or publication does not exist.", responseCode = HttpServletResponse.SC_NOT_FOUND) })
+
   public Response getEventPublication(@HeaderParam("Accept") String acceptHeader, @PathParam("eventId") String eventId,
           @PathParam("publicationId") String publicationId, @QueryParam("sign") boolean sign) throws Exception {
     try {
       final ApiVersion requestedVersion = ApiMediaType.parse(acceptHeader).getVersion();
-      return ApiResponses.Json.ok(acceptHeader, getPublication(eventId, publicationId, sign, requestedVersion));
+      return ApiResponseBuilder.Json.ok(acceptHeader, getPublication(eventId, publicationId, sign, requestedVersion));
     } catch (NotFoundException e) {
-      return ApiResponses.notFound(e.getMessage());
+      return ApiResponseBuilder.notFound(e.getMessage());
     } catch (SearchIndexException e) {
       logger.error("Unable to get list of publications from event with id '{}'", eventId, e);
       throw new WebApplicationException(Status.INTERNAL_SERVER_ERROR);
     }
   }
 
+
   private JObject getPublication(String eventId, String publicationId, Boolean withSignedUrls, ApiVersion requestedVersion)
           throws SearchIndexException, NotFoundException {
     for (final Event event : indexService.getEvent(eventId, elasticsearchIndex)) {
-      List<Publication> publications = $(event.getPublications()).filter(EventUtils.internalChannelFilter).toList();
+      List<Publication> publications;
+      publications = event.getPublications().stream().filter(publication -> (!requestedVersion.isSmallerThan(VERSION_1_11_0) || EventUtils.internalChannelFilter.apply(publication))).collect(Collectors.toList());
       for (Publication publication : publications) {
         if (publicationId.equals(publication.getIdentifier())) {
           return getPublication(publication, withSignedUrls, requestedVersion);
@@ -1879,12 +1947,12 @@ public class EventsEndpoint implements ManagedService {
       final Opt<Event> event = indexService.getEvent(id, elasticsearchIndex);
 
       if (event.isNone()) {
-        return ApiResponses.notFound(String.format("Unable to find event with id '%s'", id));
+        return ApiResponseBuilder.notFound(String.format("Unable to find event with id '%s'", id));
       }
 
       final JObject scheduling = SchedulingInfo.of(event.get().getIdentifier(), schedulerService).toJson();
       if (!scheduling.isEmpty()) {
-        return ApiResponses.Json.ok(acceptHeader, scheduling);
+        return ApiResponseBuilder.Json.ok(acceptHeader, scheduling);
       }
       return Response.noContent().build();
     } catch (SearchIndexException e) {
@@ -1917,7 +1985,7 @@ public class EventsEndpoint implements ManagedService {
         allowConflict = false;
     }
     if (event.isNone()) {
-      return ApiResponses.notFound(String.format("Unable to find event with id '%s'", id));
+      return ApiResponseBuilder.notFound(String.format("Unable to find event with id '%s'", id));
     }
     final JSONParser parser = new JSONParser();
     JSONObject parsedJson;
@@ -1969,7 +2037,7 @@ public class EventsEndpoint implements ManagedService {
       final List<MediaPackage> conflictingEvents = getConflictingEvents(
           schedulingInfo.merge(technicalMetadata), agentStateService, schedulerService);
       logger.debug("Client tried to change scheduling information causing a conflict for event {}.", id);
-      return Optional.of(ApiResponses.Json.conflict(requestedVersion,
+      return Optional.of(ApiResponseBuilder.Json.conflict(requestedVersion,
           arr(convertConflictingEvents(Optional.of(id), conflictingEvents, indexService, elasticsearchIndex))));
     }
     return Optional.empty();
@@ -1982,8 +2050,15 @@ public class EventsEndpoint implements ManagedService {
           pathParameters = {
                   @RestParameter(name = "eventId", description = "The event id", isRequired = true, type = STRING) },
           restParameters = {
-                  @RestParameter(description = "Flavor to add track to, e.g. captions/source+en", isRequired = true, name = "flavor", type = RestParameter.Type.STRING),
-                  @RestParameter(description = "If true, all other tracks in the specified flavor are REMOVED", isRequired = true, name = "overwriteExisting", type = RestParameter.Type.BOOLEAN),
+                  @RestParameter(description = "Flavor to add track to, e.g. captions/source",
+                      isRequired = true, name = "flavor", type = RestParameter.Type.STRING),
+                  @RestParameter(description = "Comma separated list of tags for the given track, e.g. archive,publish. "
+                      + "If a 'lang:LANG-CODE' tag exists and overwriteExisting=true "
+                      + "only tracks with same lang tag and flavor will be replaced. This behavior is used for captions.",
+                      isRequired = false, name = "tags", type = RestParameter.Type.STRING),
+                  @RestParameter(description = "If true, all other tracks in the specified flavor are REMOVED. "
+                      + "If tags argument contains a lang:LANG-CODE tag, only elements with same tag would be removed.",
+                      isRequired = true, name = "overwriteExisting", type = RestParameter.Type.BOOLEAN),
                   @RestParameter(description = "The track file", isRequired = true, name = "track", type = RestParameter.Type.FILE),
           },
           responses = {
@@ -1999,6 +2074,8 @@ public class EventsEndpoint implements ManagedService {
       MediaPackageElementFlavor tmpFlavor = MediaPackageElementFlavor.parseFlavor("addTrack/temporary");
       MediaPackageElementFlavor newFlavor = null;
       Opt<Event> event;
+      List<String> tags = null;
+      String langTag = null;
 
       try {
         event = indexService.getEvent(id, elasticsearchIndex);
@@ -2007,7 +2084,7 @@ public class EventsEndpoint implements ManagedService {
       }
 
       if (event.isNone()) {
-        return ApiResponses.notFound(String.format("Unable to find event with id '%s'", id));
+        return ApiResponseBuilder.notFound(String.format("Unable to find event with id '%s'", id));
       }
       MediaPackage mp = indexService.getEventMediapackage(event.get());
 
@@ -2033,6 +2110,19 @@ public class EventsEndpoint implements ManagedService {
             } catch (IllegalArgumentException e) {
               return RestUtil.R.badRequest(String.format("Could not parse flavor %s; %s", flavorString, e.getMessage()));
             }
+          } else if ("tags".equals(fieldName)) {
+            String tagsString = Streams.asString(item.openStream());
+            if (StringUtils.isNotBlank(tagsString)) {
+              tags = List.of(StringUtils.split(tagsString, ','));
+              // find lang tag if exists
+              for (String tag : tags) {
+                if (StringUtils.startsWith(StringUtils.trimToEmpty(tag), "lang:")) {
+                  // lang tag is set
+                  langTag = StringUtils.trimToEmpty(tag);
+                  break;
+                }
+              }
+            }
           } else if ("overwriteExisting".equals(fieldName)) {
             overwriteExisting = Boolean.parseBoolean(Streams.asString(item.openStream()));
           }
@@ -2048,13 +2138,21 @@ public class EventsEndpoint implements ManagedService {
         // remove existing attachments of the new flavor
         Track[] existing = mp.getTracks(newFlavor);
         for (int i = 0; i < existing.length; i++) {
-          mp.remove(existing[i]);
-          logger.debug("Overwriting existing asset {} {}", tmpFlavor, newFlavor);
+          // if lang tag is set, remove only matching elements
+          if (null == langTag || existing[i].containsTag(langTag)) {
+            mp.remove(existing[i]);
+            logger.debug("Overwriting existing asset {} {}", tmpFlavor, newFlavor);
+          }
         }
       }
       // correct the flavor of the new attachment
       for (Track track : mp.getTracks(tmpFlavor)) {
         track.setFlavor(newFlavor);
+        if (null != tags) {
+          for (String tag : tags) {
+            track.addTag(tag);
+          }
+        }
       }
       logger.debug("Updated asset {} {}", tmpFlavor, newFlavor);
 

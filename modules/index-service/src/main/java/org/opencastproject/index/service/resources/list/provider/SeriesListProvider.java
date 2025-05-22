@@ -47,6 +47,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
@@ -54,7 +55,6 @@ import java.util.List;
 import java.util.Map;
 
 @Component(
-    immediate = true,
     service = ResourceListProvider.class,
     property = {
         "service.description=Series list provider",
@@ -74,8 +74,9 @@ public class SeriesListProvider implements ResourceListProvider {
   public static final String LANGUAGE = PROVIDER_PREFIX + ".LANGUAGE";
   public static final String ORGANIZERS = PROVIDER_PREFIX + ".ORGANIZERS";
   public static final String LICENSE = PROVIDER_PREFIX + ".LICENSE";
+  public static final String SERIES_WRITE_ONLY = PROVIDER_PREFIX + ".WRITE_ONLY";
 
-  private static final String[] NAMES = { PROVIDER_PREFIX, CONTRIBUTORS, ORGANIZERS, TITLE_EXTENDED };
+  private static final String[] NAMES = { PROVIDER_PREFIX, CONTRIBUTORS, ORGANIZERS, TITLE_EXTENDED, SERIES_WRITE_ONLY };
 
   /** The search index. */
   private ElasticsearchIndex searchIndex;
@@ -130,7 +131,10 @@ public class SeriesListProvider implements ResourceListProvider {
         seriesQuery.sortByTitle(SortCriterion.Order.Ascending);
         seriesQuery.sortByCreatedDateTime(SortCriterion.Order.Descending);
         seriesQuery.sortByOrganizers(SortCriterion.Order.Ascending);
-        SearchResult searchResult = searchIndex.getByQuery(seriesQuery);
+        if (SERIES_WRITE_ONLY.equals(listName)) {
+          seriesQuery.withAction(Permissions.Action.WRITE);
+        }
+        SearchResult<Series> searchResult = searchIndex.getByQuery(seriesQuery);
         Calendar calendar = Calendar.getInstance();
         for (SearchResultItem<Series> item : searchResult.getItems()) {
           Series s = item.getSource();
@@ -149,6 +153,24 @@ public class SeriesListProvider implements ResourceListProvider {
               sb.append(" (").append(StringUtils.join(extendedTitleData, ", ")).append(")");
             }
             result.put(s.getIdentifier(), sb.toString());
+          } else if (PROVIDER_PREFIX.equals(listName)) {
+            String newSeriesName = s.getTitle();
+            boolean isTitleRepeated = Arrays.stream(searchResult.getItems())
+                .anyMatch(series ->
+                    !series.equals(item) && series.getSource().getTitle().equals(s.getTitle())
+                );
+            if (isTitleRepeated) {
+              //If a series name is repeated, will add the first 7 characters of the series ID to the display name on the
+              //admin-ui
+              if (s.getIdentifier().length() > 8) {
+                newSeriesName += " " + "(ID: " + s.getIdentifier().substring(0, 8) + "...)";
+              } else {
+                newSeriesName += " " + "(ID: " + s.getIdentifier() + ")";
+              }
+              logger.trace(String.format("Repeated series title \"%s\" found, changing to \"%s\" for admin-ui display",
+                  s.getTitle(), newSeriesName));
+            }
+            result.put(s.getIdentifier(), newSeriesName);
           } else {
             result.put(s.getIdentifier(), s.getTitle());
           }

@@ -6,8 +6,6 @@
      <!-- Only launched from add asset in admin interface, not available for selection by end users via the Admin UI -->
   </tags>
   <description>Publish uploaded assets</description>
-  <configuration_panel>
-  </configuration_panel>
 
   <operations>
 
@@ -35,10 +33,9 @@
     <!-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -->
     <!-- Special handling for captions                                     -->
     <!--                                                                   -->
-    <!-- Creates captions/prepared and captions/delivery.                  -->
+    <!-- Creates captions/delivery.                                        -->
     <!-- Sets the following tags:                                          -->
     <!--    captions/source     archive, exclude-publish                   -->
-    <!--    captions/prepared   archive                                    -->
     <!--    captions/delivery   engage-download                            -->
     <!-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -->
 
