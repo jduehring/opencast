@@ -69,7 +69,6 @@ import org.opencastproject.message.broker.api.assetmanager.AssetManagerItem;
 import org.opencastproject.message.broker.api.update.AssetManagerUpdateHandler;
 import org.opencastproject.metadata.dublincore.DublinCores;
 import org.opencastproject.metadata.dublincore.EventCatalogUIAdapter;
-import org.opencastproject.security.api.AccessControlEntry;
 import org.opencastproject.security.api.AccessControlList;
 import org.opencastproject.security.api.AccessControlParser;
 import org.opencastproject.security.api.AuthorizationService;
@@ -449,14 +448,12 @@ public class AssetManagerImpl extends AbstractIndexProducer implements AssetMana
       }
 
       final AccessControlList acl = authorizationService.getActiveAcl(mp).getA();
-      // store acl as properties
-      // Drop old ACL rules
-      deleteProperties(mediaPackageId, SECURITY_NAMESPACE);
-      // Set new ACL rules
-      for (final AccessControlEntry ace : acl.getEntries()) {
-        getDatabase().saveProperty(Property.mk(PropertyId.mk(mediaPackageId, SECURITY_NAMESPACE,
-                mkPropertyName(ace.getRole(), ace.getAction())), Value.mk(ace.isAllow())));
-      }
+      // store acl as properties, replacing the old ACL rules in a single transaction
+      final List<Property> aclProperties = acl.getEntries().stream()
+          .map(ace -> Property.mk(PropertyId.mk(mediaPackageId, SECURITY_NAMESPACE,
+              mkPropertyName(ace.getRole(), ace.getAction())), Value.mk(ace.isAllow())))
+          .collect(Collectors.toList());
+      getDatabase().replaceProperties(mediaPackageId, SECURITY_NAMESPACE, aclProperties);
 
       updateEventInIndex(snapshot);
 
